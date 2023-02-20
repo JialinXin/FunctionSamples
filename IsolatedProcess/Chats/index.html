@@ -1,0 +1,50 @@
+﻿<html>
+<body>
+    <h1>Azure Web PubSub Anomymous Chat</h1>
+    <div id="login-section">
+        <input id="name" placeholder="Input a name before message" />
+        <button type="submit" onclick="location.href=`/api/index?userId=${document.getElementById('name').value}`">Login</button>
+        <p></p>
+    </div>
+    <div id="message-section" >
+        <input id="message" placeholder="Type to chat. Enter to send." />
+        <p></p>
+        <div id="messages"></div>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/3.1.7/signalr.min.js"></script>
+    <script>
+        // wps way
+        (async function () {
+            // simple checks, null acceptable.
+            let authenticated = window.location.href.includes('?userId=');
+            if (!authenticated) {
+                // let user give a name first.
+                document.querySelector("#login-section").style.display = "block";
+                document.querySelector("#message-section").style.display = "none";
+            }
+            else {
+                document.querySelector("#login-section").style.display = "none";
+                document.querySelector("#message-section").style.display = "block";
+                let messages = document.querySelector('#messages');
+                let res = await fetch(`/api/negotiate${location.search}`);
+                let url = await res.json();
+                let ws = new WebSocket(url.url);
+                ws.onopen = () => console.log('connected');
+
+                ws.onmessage = event => {
+                    let m = document.createElement('p');
+                    m.innerText = event.data;
+                    messages.appendChild(m);
+                };
+                let message = document.querySelector('#message');
+                message.addEventListener('keypress', e => {
+                    if (e.charCode !== 13) return;
+                    ws.send(message.value);
+                    message.value = '';
+                });
+            }
+        })();
+
+    </script>
+</body>
+</html>
