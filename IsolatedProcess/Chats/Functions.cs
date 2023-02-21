@@ -1,4 +1,6 @@
 using System.Net;
+using System.Text.Json.Nodes;
+using Azure;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
@@ -35,8 +37,11 @@ namespace Chats
             return response;
         }
 
-        [Function("connect")]
-        public static WebPubSubEventResponse Connect(
+
+        #region WebPubSubTrigger
+
+        [Function("trigger-connect")]
+        public static WebPubSubEventResponse TriggerConnect(
             [WebPubSubTrigger(WebPubSubEventType.System, "connect")] ConnectEventRequest request)
         {
             //Console.WriteLine($"Received client connect with connectionId: {request.ConnectionContext.ConnectionId}");
@@ -51,8 +56,8 @@ namespace Chats
             //return request.CreateResponse("aaa", null, null, null);
         }
 
-        [Function("connected")]
-        public static ConnectedActions Connected(
+        [Function("trigger-connected")]
+        public static ConnectedActions TriggerConnected(
             [WebPubSubTrigger(WebPubSubEventType.System, "connected")] ConnectedEventRequest request)
         {
             var actions = new ConnectedActions();
@@ -77,8 +82,8 @@ namespace Chats
             return actions;
         }
 
-        [Function("broadcast")]
-        public static MessageResponse Broadcast(
+        [Function("trigger-broadcast")]
+        public static MessageResponse TriggerBroadcast(
             [WebPubSubTrigger(WebPubSubEventType.User, "message")] UserEventRequest request, HttpRequestData httpReq)
         {
             var response = new MessageResponse();
@@ -98,9 +103,9 @@ namespace Chats
             return response;
         }
 
-        [Function("disconnected")]
+        [Function("trigger-disconnected")]
         [WebPubSubOutput]
-        public static SendToAllAction Disconnected(
+        public static SendToAllAction TriggerDisconnected(
             [WebPubSubTrigger(WebPubSubEventType.System, "disconnected")] DisconnectedEventRequest request)
         {
             Console.WriteLine("Disconnect.");
@@ -109,6 +114,112 @@ namespace Chats
                 Data = BinaryData.FromString($"[SYSTEM]{request.ConnectionContext.UserId} disconnect."),
                 DataType = WebPubSubDataType.Text
             };
+        }
+
+        #endregion
+
+        #region WebPubSubContext
+        // validate method when upstream set as http://<func-host>/api/{event}
+        [Function("validate")]
+        public static HttpResponseData Validate(
+            [HttpTrigger(AuthorizationLevel.Anonymous, "options")] HttpRequestData req,
+            [WebPubSubContextInput] WebPubSubContext wpsReq)
+        {
+            return BuildHttpResponseData(req, wpsReq.Response);
+        }
+
+        [Function("connect")]
+        public static HttpResponseData Connect([HttpTrigger(AuthorizationLevel.Anonymous)] HttpRequestData req,
+            [WebPubSubContextInput] WebPubSubContext wpsReq)
+        {
+            var response = req.CreateResponse();
+            Console.WriteLine($"Received client connect request.");
+            if (wpsReq.Request is PreflightRequest || wpsReq.ErrorMessage != null)
+            {
+                response.WriteAsJsonAsync(wpsReq.Response);
+                return response;
+            }
+            var request = wpsReq.Request as ConnectEventRequest;
+            // assign the properties if needed.
+            response.WriteAsJsonAsync(request.CreateResponse(request.ConnectionContext.UserId, null, null, null));
+            return response;
+        }
+
+        [Function("connected")]
+        public static ConnectedActions Connected([HttpTrigger(AuthorizationLevel.Anonymous)] HttpRequestData req,
+            [WebPubSubContextInput] WebPubSubContext wpsReq)
+        {
+            var actions = new ConnectedActions();
+            actions.BroadcastAll = new SendToAllAction
+            {
+                Data = BinaryData.FromString($"[SYSTEM]{wpsReq.Request.ConnectionContext.UserId} connected."),
+                DataType = WebPubSubDataType.Text
+            };
+
+            actions.AddGroup = new AddUserToGroupAction
+            {
+                UserId = wpsReq.Request.ConnectionContext.UserId,
+                Group = "group1"
+            };
+            actions.Callback = new SendToUserAction
+            {
+                UserId = wpsReq.Request.ConnectionContext.UserId,
+                Data = BinaryData.FromString($"[SYSTEM]{wpsReq.Request.ConnectionContext.UserId} joined group: group1."),
+                DataType = WebPubSubDataType.Text
+            };
+
+            return actions;
+        }
+
+        [Function("message")]
+        public static MessageResponse1 Broadcast([HttpTrigger(AuthorizationLevel.Anonymous)] HttpRequestData req,
+            [WebPubSubContextInput] WebPubSubContext wpsReq)
+        {
+            var response = new MessageResponse1();
+            response.Response = req.CreateResponse();
+
+            if (wpsReq.Request is PreflightRequest || wpsReq.ErrorMessage != null)
+            {
+                response.Response.WriteAsJsonAsync(wpsReq.Response);
+                return response;
+            }
+            if (wpsReq.Request is UserEventRequest request)
+            {
+                response.BroadcastAll = new SendToAllAction
+                {
+                    Data = request.Data,
+                    DataType = request.DataType
+                };
+            }
+
+            response.Response.WriteAsJsonAsync(new UserEventResponse("[SYSTEM]ACK"));
+            return response;
+        }
+
+        [Function("disconnected")]
+        [WebPubSubOutput]
+        public static SendToAllAction Disconnected([HttpTrigger(AuthorizationLevel.Anonymous)] HttpRequestData req,
+            [WebPubSubContextInput] WebPubSubContext wpsReq)
+        {
+            Console.WriteLine("Disconnect.");
+            return new SendToAllAction
+            {
+                Data = BinaryData.FromString($"[SYSTEM]{wpsReq.Request.ConnectionContext.UserId} disconnect."),
+                DataType = WebPubSubDataType.Text
+            };
+        }
+        #endregion
+
+        public static HttpResponseData BuildHttpResponseData(HttpRequestData request, SimpleResponse wpsResponse)
+        {
+            var response = request.CreateResponse();
+            response.StatusCode = (HttpStatusCode)wpsResponse.Status;
+            response.Body = response.Body;
+            foreach (var header in wpsResponse.Headers)
+            {
+                response.Headers.Add(header.Key, header.Value);
+            }
+            return response;
         }
     }
 
@@ -130,5 +241,13 @@ namespace Chats
         public SendToAllAction? BroadcastAll { get; set; }
 
         public UserEventResponse? Response { get; set; }
+    }
+
+    public class MessageResponse1
+    {
+        [WebPubSubOutput]
+        public SendToAllAction? BroadcastAll { get; set; }
+
+        public HttpResponseData? Response { get; set; }
     }
 }
